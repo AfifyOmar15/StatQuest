@@ -1,0 +1,1310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StatQuest: The Idle Hypothesis</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+    body {
+      background: #090b10;
+      color: #f1f5f9;
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+    #game-wrapper {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100vw;
+      height: 100vh;
+      padding: 10px;
+    }
+    canvas {
+      background: #0e111a;
+      border: 2px solid #1e293b;
+      border-radius: 14px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.75);
+      max-width: 100%;
+      max-height: 100%;
+      width: auto;
+      height: auto;
+      aspect-ratio: 1100 / 680;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div id="game-wrapper">
+    <canvas id="gameCanvas" width="1100" height="680"></canvas>
+  </div>
+
+<script>
+// =====================================================
+// 1. CANVAS & PALETTE SETUP
+// =====================================================
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+const WIDTH = 1100, HEIGHT = 680;
+const SAVE_KEY = "statquest_idle_hypothesis_save_v1";
+
+const COLORS = {
+  BG_DARK: "#0e111a",
+  BG_PANEL: "#181d2c",
+  BG_CARD: "#20273a",
+  CYAN: "#38bdf8",
+  GOLD: "#facc15",
+  PURPLE: "#a855f7",
+  GREEN: "#4ade80",
+  RED: "#f87171",
+  ORANGE: "#fb923c",
+  WHITE: "#f1f5f9",
+  MUTED: "#94a3b8"
+};
+
+// =====================================================
+// 2. WEB AUDIO API PROCEDURAL SFX (NO MUSIC)
+// =====================================================
+class SoundFX {
+  constructor() {
+    this.enabled = true;
+    this.ctx = null;
+  }
+  _init() {
+    if (!this.ctx) {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) this.ctx = new AudioCtx();
+    }
+    if (this.ctx && this.ctx.state === "suspended") {
+      this.ctx.resume();
+    }
+  }
+  playTone(fStart, fEnd, duration, type = "sine", vol = 0.18) {
+    if (!this.enabled) return;
+    try {
+      this._init();
+      if (!this.ctx) return;
+      const now = this.ctx.currentTime;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(fStart, now);
+      osc.frequency.exponentialRampToValueAtTime(Math.max(20, fEnd), now + duration);
+      gain.gain.setValueAtTime(vol, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(now);
+      osc.stop(now + duration);
+    } catch (e) {}
+  }
+  playChord(notes, stepLen, type = "sine", vol = 0.16) {
+    if (!this.enabled) return;
+    notes.forEach((n, idx) => {
+      setTimeout(() => this.playTone(n, n, stepLen, type, vol), idx * stepLen * 850);
+    });
+  }
+  play(name) {
+    if (!this.enabled) return;
+    switch (name) {
+      case "click": this.playTone(680, 920, 0.05, "sine", 0.15); break;
+      case "upgrade": this.playChord([523.25, 659.25, 783.99], 0.06, "sine", 0.18); break;
+      case "shoot": this.playTone(540, 260, 0.06, "sine", 0.10); break;
+      case "hit": this.playTone(190, 75, 0.08, "square", 0.16); break;
+      case "crit": this.playTone(880, 210, 0.15, "sawtooth", 0.22); break;
+      case "z_strike": this.playTone(1350, 150, 0.28, "sawtooth", 0.25); break;
+      case "clt_buff": this.playChord([440, 554.37, 659.25, 880], 0.07, "sine", 0.20); break;
+      case "iqr_purge": this.playTone(320, 90, 0.25, "square", 0.24); break;
+      case "quiz_open": this.playChord([392, 523.25], 0.08, "sine", 0.18); break;
+      case "quiz_right": this.playChord([523.25, 659.25, 783.99, 1046.5], 0.08, "sine", 0.22); break;
+      case "quiz_wrong": this.playChord([311.13, 277.18, 220], 0.11, "sawtooth", 0.20); break;
+      case "relic": this.playChord([587.33, 739.99, 880, 1174.66], 0.09, "sine", 0.24); break;
+    }
+  }
+}
+const sfx = new SoundFX();
+
+// =====================================================
+// 3. 20 DESCRIPTIVE STATISTICS QUESTIONS
+// =====================================================
+const QUESTION_BANK = [
+  {
+    type: "MCQ",
+    question: "A dataset of exam scores has a few extreme low outliers. Which measure of central tendency will be pulled DOWN the most?",
+    options: ["Mean", "Median", "Mode", "Interquartile Range (IQR)"],
+    answer: 0,
+    explanation: "The arithmetic mean uses every value in the dataset, making it highly sensitive to extreme outliers."
+  },
+  {
+    type: "TF",
+    question: "True or False: If a sample has a standard deviation of s = 0, then every observation in that sample must be identical.",
+    options: ["True", "False"],
+    answer: 0,
+    explanation: "Zero dispersion (s = 0) only occurs when all data points equal the sample mean with zero deviation."
+  },
+  {
+    type: "MCQ",
+    question: "In a strongly right-skewed (positively skewed) distribution, what is the typical relationship between the mean and the median?",
+    options: ["Mean > Median", "Mean < Median", "Mean = Median", "Median = 0"],
+    answer: 0,
+    explanation: "In a right-skewed distribution, the long right tail pulls the mean toward higher values above the median."
+  },
+  {
+    type: "MCQ",
+    question: "According to the Empirical Rule, approximately what percentage of data falls within 2 standard deviations of the mean in a bell-shaped distribution?",
+    options: ["68%", "75%", "95%", "99.7%"],
+    answer: 2,
+    explanation: "The Empirical Rule states that roughly 68%, 95%, and 99.7% of values lie within 1, 2, and 3 standard deviations."
+  },
+  {
+    type: "TF",
+    question: "True or False: Adding a constant +10 to every value in a dataset increases the sample variance by 100.",
+    options: ["True", "False"],
+    answer: 1,
+    explanation: "Shifting all values by a constant changes the mean by +10, but the spread (variance and standard deviation) remains unchanged."
+  },
+  {
+    type: "MCQ",
+    question: "What percentage of observations in a dataset lie between the First Quartile (Q1) and the Third Quartile (Q3)?",
+    options: ["25%", "50%", "75%", "68%"],
+    answer: 1,
+    explanation: "The Interquartile Range (IQR = Q3 - Q1) spans from the 25th percentile to the 75th percentile, capturing the middle 50%."
+  },
+  {
+    type: "MCQ",
+    question: "Using the standard boxplot rule, an observation is flagged as an upper outlier if it exceeds which boundary?",
+    options: ["Q3 + 1.5 × IQR", "Mean + 1.5 × SD", "Q3 + 3.0 × Mean", "Q2 + 1.5 × IQR"],
+    answer: 0,
+    explanation: "Standard boxplots define fences at Q1 - 1.5×IQR and Q3 + 1.5×IQR to detect mild and extreme outliers."
+  },
+  {
+    type: "TF",
+    question: "True or False: The sample variance (s²) can be negative if most values in the dataset are negative numbers.",
+    options: ["True", "False"],
+    answer: 1,
+    explanation: "Because deviations (x - x̄)² are squared before summing, variance and standard deviation are never negative."
+  },
+  {
+    type: "MCQ",
+    question: "A student scores 85 on a test where the mean is 75 and the standard deviation is 5. What is the student's z-score?",
+    options: ["z = +2.0", "z = +1.5", "z = -2.0", "z = +10.0"],
+    answer: 0,
+    explanation: "z = (x - μ) / σ = (85 - 75) / 5 = +2.0, meaning the score is 2 standard deviations above the mean."
+  },
+  {
+    type: "MCQ",
+    question: "Which graphical display is best suited for visualizing the five-number summary (Min, Q1, Median, Q3, Max)?",
+    options: ["Boxplot", "Pie Chart", "Pareto Chart", "Scatterplot"],
+    answer: 0,
+    explanation: "A boxplot directly plots the minimum, Q1, median (Q2), Q3, and maximum along with any outliers."
+  },
+  {
+    type: "TF",
+    question: "True or False: The mode is the only measure of central tendency that can be used for nominal (categorical) data.",
+    options: ["True", "False"],
+    answer: 0,
+    explanation: "Nominal categories cannot be ranked or averaged, leaving the most frequent category (mode) as the only valid center."
+  },
+  {
+    type: "MCQ",
+    question: "Why do we divide by (n - 1) instead of N when computing the sample variance s²?",
+    options: ["To make s² an unbiased estimator of σ²", "To make the calculation faster", "To eliminate outliers", "Because the sample median is zero"],
+    answer: 0,
+    explanation: "Bessel's correction (n - 1 degrees of freedom) corrects for the downward bias caused by estimating μ with x̄."
+  },
+  {
+    type: "MCQ",
+    question: "If every value in a dataset is multiplied by 3, what happens to the sample standard deviation (s)?",
+    options: ["It is multiplied by 3", "It is multiplied by 9", "It stays the same", "It increases by +3"],
+    answer: 0,
+    explanation: "Multiplying data by a constant c scales the standard deviation by |c| (3) and the variance by c² (9)."
+  },
+  {
+    type: "TF",
+    question: "True or False: The sum of the deviations of all data points from their sample mean, ∑(xᵢ - x̄), always equals zero.",
+    options: ["True", "False"],
+    answer: 0,
+    explanation: "Because the mean is the balance point of the data, positive and negative deviations always cancel out to 0."
+  },
+  {
+    type: "MCQ",
+    question: "Which statistic is used to compare the relative dispersion of two datasets measured in completely different units?",
+    options: ["Coefficient of Variation (CV)", "Range", "Variance", "Mode"],
+    answer: 0,
+    explanation: "CV = (s / x̄) × 100% is a unitless percentage, ideal for comparing variability across different scales."
+  },
+  {
+    type: "MCQ",
+    question: "What is the median of the following sample of 6 observations:  4,  12,  7,  20,  9,  15 ?",
+    options: ["10.5", "9.0", "12.0", "11.2"],
+    answer: 0,
+    explanation: "Sorted: 4, 7, 9, 12, 15, 20. With n = 6 (even), the median is the average of the two middle values: (9 + 12) / 2 = 10.5."
+  },
+  {
+    type: "TF",
+    question: "True or False: In a histogram, the horizontal axis represents the variable's classes/bins while the vertical axis represents frequency.",
+    options: ["True", "False"],
+    answer: 0,
+    explanation: "Histograms group quantitative data into contiguous intervals on the x-axis and plot counts or frequencies on the y-axis."
+  },
+  {
+    type: "MCQ",
+    question: "Which measure of spread is MOST resistant (robust) to the presence of extreme outliers?",
+    options: ["Interquartile Range (IQR)", "Range", "Sample Variance (s²)", "Standard Deviation (s)"],
+    answer: 0,
+    explanation: "Because IQR only depends on the 25th and 75th percentiles, extreme values at either tail do not distort it."
+  },
+  {
+    type: "TF",
+    question: "True or False: The 50th percentile (P50), the Second Quartile (Q2), and the Median all refer to the exact same value.",
+    options: ["True", "False"],
+    answer: 0,
+    explanation: "All three divide an ordered dataset into two equal halves of 50% below and 50% above."
+  },
+  {
+    type: "MCQ",
+    question: "If the variance of a dataset of exam scores is s² = 36 (points²), what is the sample standard deviation?",
+    options: ["6 points", "18 points", "1,296 points", "36 points"],
+    answer: 0,
+    explanation: "Standard deviation is the positive square root of the variance: s = √36 = 6 points."
+  }
+];
+
+// =====================================================
+// 4. SMART NUMBER & STRICT-FIT TEXT HELPERS
+// =====================================================
+const SUFFIXES = ["", "K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc"];
+
+function formatNum(n, decimals = 2) {
+  if (n === null || n === undefined || isNaN(n)) return "0";
+  if (!isFinite(n)) return "MAX";
+  const sign = n < 0 ? "-" : "";
+  n = Math.abs(Number(n));
+  if (n < 1000) {
+    if (Math.abs(n - Math.round(n)) < 0.05) return sign + Math.round(n);
+    return sign + n.toFixed(1);
+  }
+  let idx = 0;
+  while (n >= 1000 && idx < SUFFIXES.length - 1) {
+    n /= 1000.0;
+    idx++;
+  }
+  if (n >= 1000) return sign + n.toExponential(2);
+  return sign + n.toFixed(decimals) + SUFFIXES[idx];
+}
+
+function drawRoundRect(x, y, w, h, r, fill, stroke = null, lineWidth = 2) {
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, r);
+  if (fill) {
+    ctx.fillStyle = fill;
+    ctx.fill();
+  }
+  if (stroke) {
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = lineWidth;
+    ctx.stroke();
+  }
+}
+
+function drawFittedText(text, color, rect, baseSize = 18, bold = true, align = "center") {
+  let size = baseSize;
+  const maxW = Math.max(10, rect.w - 14);
+  ctx.font = `${bold ? "bold " : ""}${size}px "Segoe UI", sans-serif`;
+  while (ctx.measureText(text).width > maxW && size > 9) {
+    size -= 1;
+    ctx.font = `${bold ? "bold " : ""}${size}px "Segoe UI", sans-serif`;
+  }
+  ctx.fillStyle = color;
+  ctx.textBaseline = "middle";
+  if (align === "center") {
+    ctx.textAlign = "center";
+    ctx.fillText(text, rect.x + rect.w / 2, rect.y + rect.h / 2);
+  } else if (align === "left") {
+    ctx.textAlign = "left";
+    ctx.fillText(text, rect.x + 10, rect.y + rect.h / 2);
+  } else {
+    ctx.textAlign = "right";
+    ctx.fillText(text, rect.x + rect.w - 10, rect.y + rect.h / 2);
+  }
+}
+
+function drawWrappedText(text, color, rect, fontSize = 15, lineSpacing = 22) {
+  ctx.font = `${fontSize}px "Segoe UI", sans-serif`;
+  ctx.fillStyle = color;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  const words = text.split(" ");
+  let line = "";
+  let y = rect.y;
+  for (let i = 0; i < words.length; i++) {
+    const testLine = line + (line ? " " : "") + words[i];
+    if (ctx.measureText(testLine).width > rect.w - 20 && line !== "") {
+      ctx.fillText(line, rect.x + 10, y);
+      line = words[i];
+      y += lineSpacing;
+    } else {
+      line = testLine;
+    }
+  }
+  if (line) ctx.fillText(line, rect.x + 10, y);
+}
+
+// =====================================================
+// 5. LOCALSTORAGE SAVE & OFFLINE EARNINGS MANAGER
+// =====================================================
+function getDefaultSave() {
+  return {
+    character_gender: null,
+    stage: 1,
+    wave_kills: 0,
+    data_points: 0.0,
+    mean_lvl: 1,
+    confidence_lvl: 1,
+    variance_lvl: 1,
+    sample_size_lvl: 1,
+    relic_galton: 0,
+    relic_bessel: 0,
+    relic_chebyshev: 0,
+    last_timestamp: Date.now() / 1000
+  };
+}
+
+function getOfflineRatePerMin(data) {
+  const stage = data.stage || 1;
+  const besselMult = 1.0 + 0.15 * (data.relic_bessel || 0);
+  return 12.0 * Math.pow(1.20, stage - 1) * besselMult;
+}
+
+function loadGame() {
+  const raw = localStorage.getItem(SAVE_KEY);
+  if (!raw) return { data: getDefaultSave(), offline: null };
+  try {
+    const parsed = JSON.parse(raw);
+    const data = Object.assign(getDefaultSave(), parsed);
+    let offline = null;
+    if (data.character_gender) {
+      const now = Date.now() / 1000;
+      const elapsed = Math.min(86400, Math.max(0, now - (data.last_timestamp || now)));
+      if (elapsed >= 5) {
+        const rate = getOfflineRatePerMin(data);
+        const earned = (elapsed / 60.0) * rate;
+        data.data_points += earned;
+        offline = { seconds: Math.floor(elapsed), rate, earned };
+      }
+    }
+    data.last_timestamp = Date.now() / 1000;
+    return { data, offline };
+  } catch (e) {
+    return { data: getDefaultSave(), offline: null };
+  }
+}
+
+function saveGame(data) {
+  data.last_timestamp = Date.now() / 1000;
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+  } catch (e) {}
+}
+
+// =====================================================
+// 6. REBALANCED RPG MATH & MONSTER TEMPLATES
+// =====================================================
+function getPlayerStats(data, bossDmgMult = 1.0, cltActive = false) {
+  const m = data.mean_lvl;
+  const c = data.confidence_lvl;
+  const v = data.variance_lvl;
+  const s = data.sample_size_lvl;
+
+  const galtonMult = 1.0 + 0.10 * (data.relic_galton || 0);
+  const besselMult = 1.0 + 0.15 * (data.relic_bessel || 0);
+  const bossTimeBonus = 2.0 * (data.relic_chebyshev || 0);
+
+  const rawBase = 12.0 * (1.0 + 0.18 * (m - 1)) * Math.pow(1.045, m - 1);
+  const base_dmg = rawBase * galtonMult * bossDmgMult;
+
+  let crit_chance = Math.min(0.75, 0.05 + 0.0035 * (c - 1));
+  if (cltActive) crit_chance = Math.min(0.95, crit_chance + 0.20);
+
+  const crit_mult = 1.50 + 0.05 * (v - 1);
+  let atk_speed = Math.min(4.00, 1.00 + 0.03 * (s - 1));
+  if (cltActive) atk_speed *= 1.65;
+
+  const expectedHit = base_dmg * (1.0 - crit_chance + crit_chance * crit_mult);
+  const dps = expectedHit * atk_speed;
+
+  return {
+    base_dmg,
+    crit_chance,
+    crit_mult,
+    atk_speed,
+    dps,
+    dp_mult: besselMult,
+    max_boss_time: 30.0 + bossTimeBonus
+  };
+}
+
+function getUpgradeCost(statKey, lvl) {
+  const table = {
+    mean_lvl: [20.0, 1.22],
+    sample_size_lvl: [45.0, 1.32],
+    variance_lvl: [75.0, 1.38],
+    confidence_lvl: [90.0, 1.42]
+  };
+  const [base, growth] = table[statKey];
+  return base * Math.pow(growth, lvl - 1);
+}
+
+function getMonsterTemplate(stage, dpMult = 1.0, isBoss = false) {
+  const baseHp = 48.0 * Math.pow(1.28, stage - 1);
+  const baseReward = 8.0 * Math.pow(1.22, stage - 1) * dpMult;
+  if (isBoss) {
+    const names = ["Lord Heteroskedasticity", "The P-Hacker", "Grand Outlier Titan", "The Null Leviathan"];
+    return {
+      name: `BOSS: ${names[(stage - 1) % names.length]}`,
+      max_hp: baseHp * 9.0,
+      reward: baseReward * 8.5,
+      type: "boss",
+      color: COLORS.RED
+    };
+  } else {
+    const mobs = [
+      ["Outlier Imp", "imp", COLORS.ORANGE],
+      ["Skewed Slime", "slime", COLORS.GREEN],
+      ["Noise Phantom", "phantom", COLORS.PURPLE],
+      ["Biased Golem", "golem", COLORS.CYAN]
+    ];
+    const [name, type, color] = mobs[Math.floor(Math.random() * mobs.length)];
+    return {
+      name,
+      max_hp: baseHp * (0.92 + Math.random() * 0.16),
+      reward: baseReward,
+      type,
+      color
+    };
+  }
+}
+
+// =====================================================
+// 7. SPRITES & VISUAL EFFECTS
+// =====================================================
+const SYMBOLS = ["μ", "σ²", "∑", "x̄", "n", "p", "±", "IQR"];
+const bgSymbols = Array.from({ length: 24 }, () => ({
+  x: Math.random() * WIDTH,
+  y: Math.random() * HEIGHT,
+  speed: 0.3 + Math.random() * 0.6,
+  symbol: SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)],
+  alpha: 0.1 + Math.random() * 0.16
+}));
+
+function drawStatisticianSprite(x, y, gender, tick, atkRatio = 0, bossBuff = 1.0, cltActive = false) {
+  const bob = Math.sin(tick * 0.08) * 5;
+  const lunge = atkRatio > 0.7 ? Math.sin(atkRatio * Math.PI) * 10 : 0;
+  const cx = x + lunge;
+  const cy = y + bob;
+
+  const coatCol = gender === "male" ? "#3b82f6" : "#ec4899";
+  let auraCol = gender === "male" ? COLORS.CYAN : COLORS.PURPLE;
+
+  if (cltActive) {
+    ctx.beginPath();
+    for (let bx = -48; bx <= 48; bx += 4) {
+      const by = -38 * Math.exp(-Math.pow(bx / 22.0, 2));
+      if (bx === -48) ctx.moveTo(cx + bx, cy - 52 + by);
+      else ctx.lineTo(cx + bx, cy - 52 + by);
+    }
+    ctx.strokeStyle = COLORS.GREEN;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+  }
+
+  if (bossBuff > 1.0) {
+    auraCol = COLORS.GOLD;
+    ctx.beginPath();
+    ctx.arc(cx, cy + 5, 52 + Math.sin(tick * 0.15) * 5, 0, Math.PI * 2);
+    ctx.strokeStyle = COLORS.GOLD;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  } else if (bossBuff < 1.0) {
+    auraCol = COLORS.RED;
+    ctx.beginPath();
+    ctx.arc(cx, cy + 5, 48 + Math.cos(tick * 0.15) * 4, 0, Math.PI * 2);
+    ctx.strokeStyle = COLORS.PURPLE;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  // Ground ring
+  ctx.beginPath();
+  ctx.ellipse(cx, y + 70, 40, 9, 0, 0, Math.PI * 2);
+  ctx.strokeStyle = auraCol;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Coat & Shirt
+  drawRoundRect(cx - 21, cy - 10, 42, 58, 12, coatCol);
+  ctx.fillStyle = COLORS.WHITE;
+  ctx.fillRect(cx - 8, cy - 10, 16, 54);
+
+  // Head
+  ctx.beginPath();
+  ctx.arc(cx, cy - 29, 19, 0, Math.PI * 2);
+  ctx.fillStyle = "#fde0c3";
+  ctx.fill();
+
+  // Hair
+  ctx.beginPath();
+  if (gender === "male") {
+    ctx.arc(cx, cy - 34, 20, Math.PI, 0);
+    ctx.lineWidth = 8;
+    ctx.strokeStyle = "#1e293b";
+    ctx.stroke();
+  } else {
+    ctx.arc(cx - 20, cy - 24, 10, 0, Math.PI * 2);
+    ctx.fillStyle = "#581c87";
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(cx, cy - 34, 20, Math.PI, 0);
+    ctx.lineWidth = 9;
+    ctx.strokeStyle = "#581c87";
+    ctx.stroke();
+  }
+
+  // Glasses
+  drawRoundRect(cx - 13, cy - 35, 10, 8, 2, null, COLORS.CYAN, 2);
+  drawRoundRect(cx + 3, cy - 35, 10, 8, 2, null, COLORS.CYAN, 2);
+
+  // Floating Data Orb
+  const orbY = cy - 16 + Math.cos(tick * 0.12) * 6;
+  const orbCol = cltActive ? COLORS.GREEN : (bossBuff >= 1.0 ? COLORS.GOLD : COLORS.PURPLE);
+  ctx.beginPath();
+  ctx.arc(cx + 42, orbY, 10, 0, Math.PI * 2);
+  ctx.fillStyle = orbCol;
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cx + 42, orbY, 4, 0, Math.PI * 2);
+  ctx.fillStyle = COLORS.WHITE;
+  ctx.fill();
+}
+
+function drawMonsterSprite(x, y, monster, tick, hitFlash) {
+  const bob = Math.sin(tick * 0.1) * 5;
+  const shakeX = hitFlash > 0 ? (Math.random() * 10 - 5) : 0;
+  const cx = x + shakeX;
+  const cy = y + bob;
+  const col = hitFlash > 0 ? COLORS.WHITE : monster.color;
+
+  ctx.beginPath();
+  ctx.ellipse(cx, y + 70, monster.type === "boss" ? 55 : 39, 9, 0, 0, Math.PI * 2);
+  ctx.strokeStyle = col;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  if (monster.type === "boss") {
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - 65);
+    ctx.lineTo(cx + 48, cy - 20);
+    ctx.lineTo(cx + 38, cy + 38);
+    ctx.lineTo(cx - 38, cy + 38);
+    ctx.lineTo(cx - 48, cy - 20);
+    ctx.closePath();
+    ctx.fillStyle = col;
+    ctx.fill();
+    ctx.strokeStyle = COLORS.WHITE;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    [-15, 15].forEach(ox => {
+      ctx.beginPath();
+      ctx.arc(cx + ox, cy - 15, 8, 0, Math.PI * 2);
+      ctx.fillStyle = COLORS.BG_DARK;
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(cx + ox, cy - 15, 4, 0, Math.PI * 2);
+      ctx.fillStyle = COLORS.GOLD;
+      ctx.fill();
+    });
+  } else if (monster.type === "slime") {
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + 16, 38, 30, 0, 0, Math.PI * 2);
+    ctx.fillStyle = col;
+    ctx.fill();
+    [-12, 12].forEach(ox => {
+      ctx.beginPath();
+      ctx.arc(cx + ox, cy + 8, 6, 0, Math.PI * 2);
+      ctx.fillStyle = COLORS.BG_DARK;
+      ctx.fill();
+    });
+  } else if (monster.type === "imp") {
+    ctx.beginPath();
+    ctx.arc(cx, cy + 5, 32, 0, Math.PI * 2);
+    ctx.fillStyle = col;
+    ctx.fill();
+    [-10, 10].forEach(ox => {
+      ctx.beginPath();
+      ctx.arc(cx + ox, cy, 5, 0, Math.PI * 2);
+      ctx.fillStyle = COLORS.BG_DARK;
+      ctx.fill();
+    });
+  } else {
+    drawRoundRect(cx - 30, cy - 28, 60, 68, 14, col);
+    [-11, 11].forEach(ox => {
+      ctx.beginPath();
+      ctx.arc(cx + ox, cy - 5, 6, 0, Math.PI * 2);
+      ctx.fillStyle = COLORS.BG_DARK;
+      ctx.fill();
+    });
+  }
+}
+
+// =====================================================
+// 8. GAME STATE & INTERACTIVE LAYOUT
+// =====================================================
+let loaded = loadGame();
+let saveData = loaded.data;
+let offlineReport = loaded.offline;
+let recentQIndices = [];
+
+let tick = 0;
+let autoSaveTimer = 0;
+let atkProgress = 0;
+let hitFlash = 0;
+let screenShake = 0;
+
+let isBossFight = false;
+let bossTimer = 30.0;
+let bossDmgMultiplier = 1.0;
+let quizModal = null;
+
+let skillCDs = [0, 0, 0];
+const skillMaxCDs = [12, 25, 18];
+let cltBuffTimer = 0;
+
+let combatTexts = [];
+let particles = [];
+let projectiles = [];
+let skillFX = [];
+
+const HERO_X = 175, HERO_Y = 258;
+const MOB_X = 890, MOB_Y = 258;
+
+let stats = getPlayerStats(saveData, 1.0, false);
+let monster = getMonsterTemplate(saveData.stage, stats.dp_mult, false);
+let monsterHp = monster.max_hp;
+
+// UI Rectangles
+const maleCard = { x: 240, y: 180, w: 270, h: 360 };
+const femaleCard = { x: 590, y: 180, w: 270, h: 360 };
+const dismissModalBtn = { x: WIDTH / 2 - 110, y: 430, w: 220, h: 48 };
+
+const sfxBtn = { x: 915, y: 14, w: 155, h: 24 };
+const switchBtn = { x: 915, y: 41, w: 155, h: 24 };
+const resetBtn = { x: 915, y: 68, w: 155, h: 24 };
+
+const bossBtn = { x: WIDTH / 2 - 135, y: 112, w: 270, h: 40 };
+const skillRects = [0, 1, 2].map(i => ({ x: 328 + i * 152, y: 392, w: 140, h: 48 }));
+const quizOptionRects = [0, 1, 2, 3].map(i => ({ x: WIDTH / 2 - 310, y: 285 + i * 56, w: 620, h: 46 }));
+const skipQuizBtn = { x: WIDTH / 2 - 130, y: 525, w: 260, h: 42 };
+const startBossBtn = { x: WIDTH / 2 - 140, y: 510, w: 280, h: 50 };
+
+const upgradeDefs = [
+  ["mean_lvl", "Mean (μ)", "Base Damage (+Steady)", COLORS.CYAN],
+  ["sample_size_lvl", "Sample Size (n)", "Atk Speed (+0.03/s)", COLORS.GREEN],
+  ["variance_lvl", "Variance (σ²)", "Crit Mult (+0.05x)", COLORS.PURPLE],
+  ["confidence_lvl", "Confidence (1-α)", "Crit Chance (+0.35%)", COLORS.GOLD]
+];
+const upgradeRects = [0, 1, 2, 3].map(i => ({ x: 30 + i * 263, y: 465, w: 248, h: 195 }));
+
+let mousePos = { x: 0, y: 0 };
+function inRect(p, r) {
+  return p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
+}
+
+function drawButton(rect, text, baseCol, fontSize = 16, textCol = COLORS.BG_DARK) {
+  const hov = inRect(mousePos, rect);
+  drawRoundRect(rect.x, rect.y, rect.w, rect.h, 8, baseCol, COLORS.WHITE, hov ? 3 : 1.5);
+  drawFittedText(text, textCol, rect, fontSize, true);
+}
+
+function spawnNextMonster(boss = false, dmgMult = 1.0) {
+  isBossFight = boss;
+  bossDmgMultiplier = boss ? dmgMult : 1.0;
+  const curStats = getPlayerStats(saveData, bossDmgMultiplier, cltBuffTimer > 0);
+  if (boss) bossTimer = curStats.max_boss_time;
+  monster = getMonsterTemplate(saveData.stage, curStats.dp_mult, boss);
+  monsterHp = monster.max_hp;
+  projectiles = [];
+}
+
+function openPreBossQuiz() {
+  sfx.play("quiz_open");
+  let available = QUESTION_BANK.map((_, idx) => idx).filter(i => !recentQIndices.includes(i));
+  if (available.length === 0) {
+    recentQIndices = [];
+    available = QUESTION_BANK.map((_, idx) => idx);
+  }
+  const chosenIdx = available[Math.floor(Math.random() * available.length)];
+  recentQIndices.push(chosenIdx);
+  if (recentQIndices.length > Math.floor(QUESTION_BANK.length / 2)) recentQIndices.shift();
+
+  const qRaw = QUESTION_BANK[chosenIdx];
+  let indexedOpts = qRaw.options.map((opt, i) => ({ origIdx: i, text: opt }));
+  if (qRaw.type === "MCQ") {
+    indexedOpts.sort(() => Math.random() - 0.5);
+  }
+  quizModal = {
+    type: qRaw.type,
+    question: qRaw.question,
+    options: indexedOpts.map(o => o.text),
+    answer: indexedOpts.findIndex(o => o.origIdx === qRaw.answer),
+    explanation: qRaw.explanation,
+    state: "asking",
+    selected: null,
+    is_correct: false
+  };
+}
+
+function applyMonsterDamage(dmgAmount, isCrit = false, labelPrefix = "") {
+  monsterHp -= dmgAmount;
+  hitFlash = 6;
+  if (isCrit) screenShake = Math.max(screenShake, 6);
+  const pCol = isCrit ? COLORS.GOLD : monster.color;
+  for (let i = 0; i < (isCrit ? 12 : 6); i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const spd = 2 + Math.random() * 5;
+    particles.push({
+      x: MOB_X, y: MOB_Y,
+      vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd,
+      radius: 3 + Math.random() * 3.5, color: pCol, life: 1.0
+    });
+  }
+  const prefix = labelPrefix ? `${labelPrefix} ` : (isCrit ? "CRIT! " : "");
+  combatTexts.push({
+    x: MOB_X + (Math.random() * 40 - 20),
+    y: MOB_Y - 50,
+    vy: isCrit ? -2.0 : -1.5,
+    text: `${prefix}-${formatNum(dmgAmount)}`,
+    color: isCrit ? COLORS.GOLD : COLORS.WHITE,
+    isCrit,
+    alpha: 1.0
+  });
+
+  if (monsterHp <= 0) {
+    const reward = monster.reward;
+    saveData.data_points += reward;
+    combatTexts.push({
+      x: MOB_X, y: MOB_Y - 85, vy: -1.5,
+      text: `+${formatNum(reward)} DP`, color: COLORS.GREEN, isCrit: false, alpha: 1.0
+    });
+
+    if (isBossFight) {
+      saveData.stage += 1;
+      saveData.wave_kills = 0;
+      const relics = [
+        ["relic_galton", "Relic: Galton's Board (+10% DMG)!"],
+        ["relic_bessel", "Relic: Bessel's Lens (+15% DP)!"],
+        ["relic_chebyshev", "Relic: Chebyshev's Clock (+2s Boss Time)!"]
+      ];
+      const [rKey, rMsg] = relics[Math.floor(Math.random() * relics.length)];
+      saveData[rKey] = (saveData[rKey] || 0) + 1;
+      sfx.play("relic");
+      combatTexts.push({
+        x: WIDTH / 2, y: 175, vy: -1.8,
+        text: `STAGE ${saveData.stage}! ${rMsg}`, color: COLORS.GOLD, isCrit: true, alpha: 1.0
+      });
+      spawnNextMonster(false, 1.0);
+      saveGame(saveData);
+    } else {
+      if (saveData.wave_kills < 10) saveData.wave_kills += 1;
+      spawnNextMonster(false, 1.0);
+    }
+  }
+}
+
+function triggerSkill(idx) {
+  if (!saveData.character_gender || offlineReport || quizModal) return;
+  if (skillCDs[idx] > 0) return;
+
+  skillCDs[idx] = skillMaxCDs[idx];
+  const activeMult = isBossFight ? bossDmgMultiplier : 1.0;
+  const curStats = getPlayerStats(saveData, activeMult, cltBuffTimer > 0);
+
+  if (idx === 0) {
+    sfx.play("z_strike");
+    screenShake = 10;
+    const dmg = curStats.base_dmg * curStats.crit_mult * 3.5;
+    skillFX.push({ kind: "z_strike", tx: MOB_X, ty: MOB_Y, timer: 0.35 });
+    applyMonsterDamage(dmg, true, "Z-STRIKE!");
+  } else if (idx === 1) {
+    sfx.play("clt_buff");
+    cltBuffTimer = 7.0;
+    combatTexts.push({
+      x: HERO_X, y: HERO_Y - 60, vy: -1.8,
+      text: "CLT OVERDRIVE! (n -> inf)", color: COLORS.GREEN, isCrit: true, alpha: 1.0
+    });
+  } else if (idx === 2) {
+    sfx.play("iqr_purge");
+    screenShake = 9;
+    const dmg = curStats.base_dmg * 5.0;
+    const bonusDp = monster.reward * 0.60;
+    saveData.data_points += bonusDp;
+    skillFX.push({ kind: "iqr_purge", tx: MOB_X, ty: MOB_Y, timer: 0.35 });
+    combatTexts.push({
+      x: MOB_X, y: MOB_Y - 105, vy: -1.5,
+      text: `IQR PURGE: +${formatNum(bonusDp)} DP`, color: COLORS.GOLD, isCrit: false, alpha: 1.0
+    });
+    applyMonsterDamage(dmg, true, "IQR PURGE!");
+  }
+}
+
+// =====================================================
+// 9. INPUT LISTENERS
+// =====================================================
+function getCanvasCoords(e) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - rect.left) * (WIDTH / rect.width),
+    y: (e.clientY - rect.top) * (HEIGHT / rect.height)
+  };
+}
+
+canvas.addEventListener("mousemove", e => {
+  mousePos = getCanvasCoords(e);
+});
+
+canvas.addEventListener("mousedown", e => {
+  mousePos = getCanvasCoords(e);
+
+  if (offlineReport) {
+    if (inRect(mousePos, dismissModalBtn)) {
+      sfx.play("upgrade");
+      offlineReport = null;
+      saveGame(saveData);
+    }
+    return;
+  }
+
+  if (quizModal) {
+    if (quizModal.state === "asking") {
+      for (let i = 0; i < quizModal.options.length; i++) {
+        if (inRect(mousePos, quizOptionRects[i])) {
+          quizModal.selected = i;
+          quizModal.is_correct = (i === quizModal.answer);
+          quizModal.state = "result";
+          sfx.play(quizModal.is_correct ? "quiz_right" : "quiz_wrong");
+          return;
+        }
+      }
+      if (inRect(mousePos, skipQuizBtn)) {
+        sfx.play("click");
+        quizModal = null;
+        spawnNextMonster(true, 1.0);
+        combatTexts.push({
+          x: WIDTH / 2, y: 195, vy: -1.5,
+          text: "QUIZ SKIPPED: 100% Base Damage", color: COLORS.MUTED, isCrit: false, alpha: 1.0
+        });
+      }
+    } else if (quizModal.state === "result") {
+      if (inRect(mousePos, startBossBtn)) {
+        sfx.play("click");
+        const mult = quizModal.is_correct ? 1.50 : 0.80;
+        quizModal = null;
+        spawnNextMonster(true, mult);
+        combatTexts.push({
+          x: HERO_X, y: 195, vy: -1.8,
+          text: mult > 1.0 ? "HYPOTHESIS BUFF! +50% DMG!" : "BIAS DEBUFF! -20% DMG!",
+          color: mult > 1.0 ? COLORS.GOLD : COLORS.RED, isCrit: true, alpha: 1.0
+        });
+      }
+    }
+    return;
+  }
+
+  if (!saveData.character_gender) {
+    if (inRect(mousePos, maleCard)) {
+      sfx.play("upgrade");
+      saveData.character_gender = "male";
+      saveGame(saveData);
+    } else if (inRect(mousePos, femaleCard)) {
+      sfx.play("upgrade");
+      saveData.character_gender = "female";
+      saveGame(saveData);
+    }
+    return;
+  }
+
+  if (inRect(mousePos, sfxBtn)) {
+    sfx.enabled = !sfx.enabled;
+    if (sfx.enabled) sfx.play("click");
+  } else if (inRect(mousePos, switchBtn)) {
+    sfx.play("click");
+    saveData.character_gender = null;
+    saveGame(saveData);
+  } else if (inRect(mousePos, resetBtn)) {
+    sfx.play("quiz_wrong");
+    const keepGender = saveData.character_gender;
+    saveData = getDefaultSave();
+    saveData.character_gender = keepGender;
+    spawnNextMonster(false, 1.0);
+    saveGame(saveData);
+  } else if (saveData.wave_kills >= 10 && !isBossFight && inRect(mousePos, bossBtn)) {
+    openPreBossQuiz();
+  }
+
+  for (let i = 0; i < 3; i++) {
+    if (inRect(mousePos, skillRects[i])) triggerSkill(i);
+  }
+
+  for (let i = 0; i < upgradeDefs.length; i++) {
+    if (inRect(mousePos, upgradeRects[i])) {
+      const statKey = upgradeDefs[i][0];
+      const cost = getUpgradeCost(statKey, saveData[statKey]);
+      if (saveData.data_points >= cost) {
+        sfx.play("upgrade");
+        saveData.data_points -= cost;
+        saveData[statKey] += 1;
+        saveGame(saveData);
+      }
+    }
+  }
+});
+
+window.addEventListener("keydown", e => {
+  if (e.key === "1") triggerSkill(0);
+  if (e.key === "2") triggerSkill(1);
+  if (e.key === "3") triggerSkill(2);
+});
+
+window.addEventListener("beforeunload", () => saveGame(saveData));
+
+// =====================================================
+// 10. MAIN 60-FPS GAME LOOP
+// =====================================================
+let lastFrame = performance.now();
+
+function gameLoop(now) {
+  const dt = Math.min(0.1, (now - lastFrame) / 1000.0);
+  lastFrame = now;
+  tick++;
+
+  if (hitFlash > 0) hitFlash--;
+  if (screenShake > 0) screenShake--;
+
+  const activeMult = isBossFight ? bossDmgMultiplier : 1.0;
+  stats = getPlayerStats(saveData, activeMult, cltBuffTimer > 0);
+
+  // Update Combat & Timers
+  if (saveData.character_gender && !offlineReport && !quizModal) {
+    for (let i = 0; i < 3; i++) {
+      if (skillCDs[i] > 0) skillCDs[i] = Math.max(0, skillCDs[i] - dt);
+    }
+    if (cltBuffTimer > 0) cltBuffTimer = Math.max(0, cltBuffTimer - dt);
+
+    autoSaveTimer += dt;
+    if (autoSaveTimer >= 3.0) {
+      saveGame(saveData);
+      autoSaveTimer = 0;
+    }
+
+    if (isBossFight) {
+      bossTimer -= dt;
+      if (bossTimer <= 0) {
+        sfx.play("quiz_wrong");
+        combatTexts.push({
+          x: WIDTH / 2, y: 200, vy: -1.8,
+          text: "BOSS TIME OUT! Upgrade & Retry!", color: COLORS.RED, isCrit: true, alpha: 1.0
+        });
+        spawnNextMonster(false, 1.0);
+      }
+    }
+
+    atkProgress += stats.atk_speed * dt;
+    if (atkProgress >= 1.0) {
+      atkProgress -= 1.0;
+      const isCrit = Math.random() < stats.crit_chance;
+      let dmg = stats.base_dmg * (isCrit ? stats.crit_mult : 1.0);
+      dmg *= (0.95 + Math.random() * 0.10);
+      sfx.play("shoot");
+      projectiles.push({
+        x: HERO_X + 45, y: HERO_Y - 10,
+        tx: MOB_X, ty: MOB_Y,
+        dmg, isCrit, buffState: activeMult
+      });
+    }
+
+    for (let i = projectiles.length - 1; i >= 0; i--) {
+      const p = projectiles[i];
+      const dx = p.tx - p.x, dy = p.ty - p.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist <= 19) {
+        projectiles.splice(i, 1);
+        sfx.play(p.isCrit ? "crit" : "hit");
+        applyMonsterDamage(p.dmg, p.isCrit);
+      } else {
+        p.x += (dx / dist) * 19;
+        p.y += (dy / dist) * 19;
+      }
+    }
+  }
+
+  // =====================================================
+  // RENDERING
+  // =====================================================
+  ctx.fillStyle = COLORS.BG_DARK;
+  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+  bgSymbols.forEach(s => {
+    s.y -= s.speed;
+    if (s.y < -30) { s.y = HEIGHT + 20; s.x = Math.random() * WIDTH; }
+    ctx.save();
+    ctx.globalAlpha = s.alpha;
+    ctx.font = "bold 18px 'Segoe UI', sans-serif";
+    ctx.fillStyle = COLORS.CYAN;
+    ctx.fillText(s.symbol, s.x, s.y);
+    ctx.restore();
+  });
+
+  const shakeX = screenShake > 0 ? (Math.random() * 8 - 4) : 0;
+  const shakeY = screenShake > 0 ? (Math.random() * 8 - 4) : 0;
+
+  if (!saveData.character_gender) {
+    drawFittedText("SELECT YOUR STATISTICIAN", COLORS.WHITE, { x: 0, y: 55, w: WIDTH, h: 50 }, 32, true);
+    drawFittedText("Browser localStorage Save Active: Progress & Offline DP persist automatically!", COLORS.MUTED, { x: 0, y: 110, w: WIDTH, h: 30 }, 16, false);
+
+    [[maleCard, "male", "Male Statistician", COLORS.CYAN], [femaleCard, "female", "Female Statistician", COLORS.PURPLE]].forEach(([card, gender, label, col]) => {
+      const hov = inRect(mousePos, card);
+      drawRoundRect(card.x, card.y, card.w, card.h, 16, COLORS.BG_PANEL, hov ? col : COLORS.MUTED, hov ? 3 : 1);
+      drawStatisticianSprite(card.x + card.w / 2, card.y + card.h / 2 - 20, gender, tick);
+      drawFittedText(label, col, { x: card.x, y: card.y + card.h - 65, w: card.w, h: 40 }, 20, true);
+    });
+  } else {
+    // Top HUD Boxes
+    const hudBoxes = [
+      [{ x: 30, y: 15, w: 220, h: 75 }, `STAGE ${saveData.stage}`, isBossFight ? "BOSS BATTLE!" : `Wave: ${saveData.wave_kills} / 10`, COLORS.CYAN],
+      [{ x: 265, y: 15, w: 315, h: 75 }, "DATA POINTS (DP)", `${formatNum(saveData.data_points)} DP`, COLORS.GOLD],
+      [{ x: 595, y: 15, w: 305, h: 75 }, `COMBAT DPS: ${formatNum(stats.dps)}/s`, `Offline Rate: +${formatNum(getOfflineRatePerMin(saveData))} DP/m`, COLORS.GREEN]
+    ];
+    hudBoxes.forEach(([box, topTxt, botTxt, col]) => {
+      drawRoundRect(box.x, box.y, box.w, box.h, 12, COLORS.BG_PANEL, col, 2);
+      drawFittedText(topTxt, COLORS.MUTED, { x: box.x, y: box.y + 6, w: box.w, h: 28 }, 15, false);
+      drawFittedText(botTxt, col, { x: box.x, y: box.y + 34, w: box.w, h: 34 }, 22, true);
+    });
+
+    drawButton(sfxBtn, `SFX: ${sfx.enabled ? "ON" : "OFF"}`, sfx.enabled ? COLORS.GREEN : "#4b5563", 13);
+    drawButton(switchBtn, "Switch Hero", COLORS.PURPLE, 13);
+    drawButton(resetBtn, "Reset to Stage 1", COLORS.RED, 13);
+
+    // Center Battle Arena
+    drawRoundRect(30 + shakeX, 102 + shakeY, 1040, 348, 18, COLORS.BG_PANEL, COLORS.BG_CARD, 2);
+
+    if (isBossFight) {
+      drawFittedText(`BOSS TIMER: ${bossTimer.toFixed(1)}s`, COLORS.RED, { x: WIDTH / 2 - 110, y: 110, w: 220, h: 26 }, 18, true);
+      drawRoundRect(WIDTH / 2 - 110, 140, 220, 10, 5, COLORS.BG_DARK);
+      drawRoundRect(WIDTH / 2 - 110, 140, Math.max(0, 220 * (bossTimer / stats.max_boss_time)), 10, 5, COLORS.RED);
+      const bTxt = bossDmgMultiplier > 1 ? "QUIZ BUFF ACTIVE: +50% BOSS DAMAGE" : (bossDmgMultiplier < 1 ? "QUIZ DEBUFF ACTIVE: -20% BOSS DAMAGE" : "NEUTRAL HYPOTHESIS: 100% BASE DAMAGE");
+      const bCol = bossDmgMultiplier > 1 ? COLORS.GOLD : (bossDmgMultiplier < 1 ? COLORS.RED : COLORS.MUTED);
+      drawFittedText(bTxt, bCol, { x: WIDTH / 2 - 200, y: 154, w: 400, h: 22 }, 13, true);
+    } else if (saveData.wave_kills >= 10) {
+      drawButton(bossBtn, ">> CHALLENGE BOSS (QUIZ) <<", COLORS.GOLD, 17);
+      drawFittedText("Answer 1 Descriptive Stats Question for +50% Boss Damage!", COLORS.GOLD, { x: WIDTH / 2 - 220, y: 155, w: 440, h: 22 }, 13, false);
+    } else {
+      drawFittedText("AUTO-RESEARCH COMBAT", COLORS.MUTED, { x: WIDTH / 2 - 150, y: 115, w: 300, h: 28 }, 18, true);
+    }
+
+    // 3 Separate Relic Pill Badges
+    const relicBadges = [
+      [{ x: 328, y: 182, w: 140, h: 28 }, `Galton Lv.${saveData.relic_galton} (+${saveData.relic_galton * 10}% DMG)`, COLORS.CYAN],
+      [{ x: 480, y: 182, w: 140, h: 28 }, `Bessel Lv.${saveData.relic_bessel} (+${saveData.relic_bessel * 15}% DP)`, COLORS.GOLD],
+      [{ x: 632, y: 182, w: 140, h: 28 }, `Chebyshev Lv.${saveData.relic_chebyshev} (+${saveData.relic_chebyshev * 2}s)`, COLORS.GREEN]
+    ];
+    relicBadges.forEach(([rBox, rTxt, rCol]) => {
+      drawRoundRect(rBox.x, rBox.y, rBox.w, rBox.h, 7, COLORS.BG_CARD, rCol, 1);
+      drawFittedText(rTxt, rCol, rBox, 11, true);
+    });
+
+    // Left: Hero Sprite & Attack Cooldown Bar
+    drawStatisticianSprite(HERO_X + shakeX, HERO_Y + shakeY, saveData.character_gender, tick, atkProgress, activeMult, cltBuffTimer > 0);
+    drawFittedText(`${saveData.character_gender === "male" ? "Male" : "Female"} Statistician`, COLORS.WHITE, { x: 60, y: 122, w: 230, h: 28 }, 18, true);
+    drawRoundRect(HERO_X - 70, 352, 140, 12, 6, COLORS.BG_DARK);
+    drawRoundRect(HERO_X - 70, 352, 140 * Math.min(1, atkProgress), 12, 6, COLORS.CYAN);
+    drawFittedText(`Atk Rate: ${stats.atk_speed.toFixed(2)}/s`, cltBuffTimer > 0 ? COLORS.GREEN : COLORS.MUTED, { x: HERO_X - 70, y: 366, w: 140, h: 22 }, 13, false);
+
+    // Right: Monster Sprite & Non-Overlapping Health Bar
+    drawMonsterSprite(MOB_X + shakeX, MOB_Y + shakeY, monster, tick, hitFlash);
+    drawFittedText(monster.name, monster.color, { x: 760, y: 122, w: 260, h: 28 }, 18, true);
+
+    const hpRatio = Math.max(0, monsterHp / monster.max_hp);
+    const hpBg = { x: 775, y: 348, w: 230, h: 22 };
+    drawRoundRect(hpBg.x, hpBg.y, hpBg.w, hpBg.h, 7, COLORS.BG_DARK);
+    drawRoundRect(hpBg.x, hpBg.y, hpBg.w * hpRatio, hpBg.h, 7, COLORS.RED);
+    drawRoundRect(hpBg.x, hpBg.y, hpBg.w, hpBg.h, 7, null, COLORS.WHITE, 1);
+    drawFittedText(`HP: ${formatNum(Math.max(0, monsterHp))} / ${formatNum(monster.max_hp)}`, COLORS.WHITE, hpBg, 13, true);
+
+    // Center-Bottom: 3 Active Statistical Skills
+    const skillDefs = [
+      ["[1] Z-Score Strike", "3.5x Crit Beam", COLORS.CYAN],
+      ["[2] CLT Overdrive", "+65% Spd / +20% Crit", COLORS.GREEN],
+      ["[3] IQR Purge", "5x DMG + Bonus DP", COLORS.GOLD]
+    ];
+    skillDefs.forEach(([sTitle, sDesc, sCol], idx) => {
+      const sRect = skillRects[idx];
+      const cd = skillCDs[idx];
+      const ready = cd <= 0;
+      const hov = inRect(mousePos, sRect);
+      drawRoundRect(sRect.x, sRect.y, sRect.w, sRect.h, 10, ready ? COLORS.BG_CARD : COLORS.BG_DARK, ready ? sCol : "#3c465a", hov && ready ? 2.5 : 1);
+      if (ready) {
+        drawFittedText(sTitle, sCol, { x: sRect.x, y: sRect.y + 4, w: sRect.w, h: 20 }, 13, true);
+        drawFittedText(sDesc, COLORS.WHITE, { x: sRect.x, y: sRect.y + 24, w: sRect.w, h: 20 }, 11, false);
+      } else {
+        const fillW = (sRect.w - 4) * (1 - cd / skillMaxCDs[idx]);
+        drawRoundRect(sRect.x + 2, sRect.y + 2, Math.max(0, fillW), sRect.h - 4, 8, "#232d44");
+        drawFittedText(sTitle, COLORS.MUTED, { x: sRect.x, y: sRect.y + 4, w: sRect.w, h: 20 }, 13, true);
+        drawFittedText(`Cooldown: ${cd.toFixed(1)}s`, COLORS.ORANGE, { x: sRect.x, y: sRect.y + 24, w: sRect.w, h: 20 }, 11, true);
+      }
+    });
+
+    // Render Skill Visuals, Projectiles, Particles & Floating Damage Text
+    for (let i = skillFX.length - 1; i >= 0; i--) {
+      const fx = skillFX[i];
+      fx.timer -= dt;
+      if (fx.timer <= 0) { skillFX.splice(i, 1); continue; }
+      if (fx.kind === "z_strike") {
+        ctx.beginPath();
+        ctx.moveTo(fx.tx, 105);
+        for (let sy = 135; sy < fx.ty; sy += 28) ctx.lineTo(fx.tx + (Math.random() * 50 - 25), sy);
+        ctx.lineTo(fx.tx, fx.ty);
+        ctx.strokeStyle = COLORS.CYAN; ctx.lineWidth = 6; ctx.stroke();
+        ctx.strokeStyle = COLORS.WHITE; ctx.lineWidth = 2; ctx.stroke();
+      } else if (fx.kind === "iqr_purge") {
+        const spread = 110 * (fx.timer / 0.35);
+        ctx.strokeStyle = COLORS.GOLD; ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.moveTo(fx.tx - spread, fx.ty - 60); ctx.lineTo(fx.tx - spread, fx.ty + 60);
+        ctx.moveTo(fx.tx + spread, fx.ty - 60); ctx.lineTo(fx.tx + spread, fx.ty + 60);
+        ctx.stroke();
+      }
+    }
+
+    projectiles.forEach(p => {
+      const col = p.isCrit ? COLORS.GOLD : (p.buffState > 1 ? COLORS.GREEN : (p.buffState < 1 ? COLORS.PURPLE : COLORS.CYAN));
+      const r = p.isCrit ? 11 : 7;
+      ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fillStyle = col; ctx.fill();
+      ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(2, r - 4), 0, Math.PI * 2); ctx.fillStyle = COLORS.WHITE; ctx.fill();
+    });
+
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx; p.y += p.vy; p.vy += 0.15; p.life -= 0.04;
+      if (p.life <= 0) { particles.splice(i, 1); continue; }
+      ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(1, p.radius * p.life), 0, Math.PI * 2);
+      ctx.fillStyle = p.color; ctx.fill();
+    }
+
+    for (let i = combatTexts.length - 1; i >= 0; i--) {
+      const ct = combatTexts[i];
+      ct.y += ct.vy; ct.alpha -= 0.018;
+      if (ct.alpha <= 0) { combatTexts.splice(i, 1); continue; }
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, ct.alpha);
+      ctx.font = `bold ${ct.isCrit ? 26 : 20}px "Segoe UI", sans-serif`;
+      ctx.fillStyle = ct.color;
+      ctx.textAlign = "center";
+      ctx.fillText(ct.text, ct.x, ct.y);
+      ctx.restore();
+    }
+
+    // Bottom 4 Statistical Upgrade Cards
+    upgradeDefs.forEach(([statKey, titleStr, descStr, col], i) => {
+      const card = upgradeRects[i];
+      const lvl = saveData[statKey];
+      const cost = getUpgradeCost(statKey, lvl);
+      const canAfford = saveData.data_points >= cost;
+      const hov = inRect(mousePos, card);
+
+      drawRoundRect(card.x, card.y, card.w, card.h, 14, COLORS.BG_CARD, canAfford ? col : "#3c465f", hov && canAfford ? 3 : 2);
+      drawFittedText(`${titleStr}  [Lv.${lvl}]`, col, { x: card.x, y: card.y + 10, w: card.w, h: 26 }, 18, true);
+      drawFittedText(descStr, COLORS.MUTED, { x: card.x, y: card.y + 38, w: card.w, h: 22 }, 13, false);
+
+      const valStr = statKey === "mean_lvl" ? `Dmg: ${formatNum(stats.base_dmg)}`
+        : statKey === "confidence_lvl" ? `Crit: ${(stats.crit_chance * 100).toFixed(2)}%`
+        : statKey === "variance_lvl" ? `Crit Mult: ${stats.crit_mult.toFixed(2)}x`
+        : `Speed: ${stats.atk_speed.toFixed(2)} /s`;
+
+      drawFittedText(valStr, COLORS.WHITE, { x: card.x, y: card.y + 72, w: card.w, h: 30 }, 18, true);
+
+      const buyRect = { x: card.x + 16, y: card.y + card.h - 58, w: card.w - 32, h: 42 };
+      drawRoundRect(buyRect.x, buyRect.y, buyRect.w, buyRect.h, 8, canAfford ? COLORS.GREEN : "#374151");
+      drawFittedText(`UPGRADE: ${formatNum(cost)} DP`, canAfford ? COLORS.BG_DARK : COLORS.MUTED, buyRect, 15, true);
+    });
+  }
+
+  // Pre-Boss Quiz Modal
+  if (quizModal) {
+    ctx.fillStyle = "rgba(0, 0, 0, 0.82)";
+    ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+    const modal = { x: WIDTH / 2 - 360, y: 85, w: 720, h: 505 };
+    const borderC = quizModal.state === "asking" ? COLORS.CYAN : (quizModal.is_correct ? COLORS.GREEN : COLORS.RED);
+    drawRoundRect(modal.x, modal.y, modal.w, modal.h, 18, COLORS.BG_PANEL, borderC, 3);
+
+    const hdrTxt = quizModal.state === "asking" ? "PRE-BOSS HYPOTHESIS TRIAL"
+      : (quizModal.is_correct ? "HYPOTHESIS ACCEPTED! (+50% BOSS DMG)" : "BIAS DETECTED! (-20% BOSS DMG)");
+    drawFittedText(hdrTxt, borderC, { x: modal.x + 20, y: modal.y + 18, w: modal.w - 40, h: 36 }, 28, true);
+    drawFittedText("Descriptive Statistics Check  |  Correct: +50% Damage Buff   |   Wrong: -20% Damage Debuff", COLORS.GOLD, { x: modal.x + 20, y: modal.y + 60, w: modal.w - 40, h: 24 }, 13, true);
+
+    const qBox = { x: modal.x + 35, y: modal.y + 92, w: modal.w - 70, h: 95 };
+    drawRoundRect(qBox.x, qBox.y, qBox.w, qBox.h, 12, COLORS.BG_CARD, "#3c4b69", 1);
+    drawWrappedText(quizModal.question, COLORS.WHITE, { x: qBox.x + 8, y: qBox.y + 14, w: qBox.w - 16, h: qBox.h - 20 }, 16, 22);
+
+    if (quizModal.state === "asking") {
+      const prefixes = ["A", "B", "C", "D"];
+      quizModal.options.forEach((optText, i) => {
+        const optRect = quizOptionRects[i];
+        const hov = inRect(mousePos, optRect);
+        drawRoundRect(optRect.x, optRect.y, optRect.w, optRect.h, 10, hov ? "#2d3a56" : COLORS.BG_CARD, hov ? COLORS.CYAN : COLORS.MUTED, hov ? 2 : 1);
+        drawFittedText(`  ${prefixes[i]}.   ${optText}`, COLORS.WHITE, optRect, 15, false, "left");
+      });
+      drawButton(skipQuizBtn, "Skip Quiz (Fight at 100% DMG)", "#475569", 13, COLORS.WHITE);
+    } else {
+      const ansStr = quizModal.options[quizModal.answer];
+      const resBox = { x: modal.x + 35, y: 290, w: modal.w - 70, h: 190 };
+      drawRoundRect(resBox.x, resBox.y, resBox.w, resBox.h, 12, COLORS.BG_CARD, borderC, 2);
+      drawFittedText(`Correct Answer:  ${ansStr}`, COLORS.GREEN, { x: resBox.x + 15, y: resBox.y + 15, w: resBox.w - 30, h: 30 }, 18, true, "left");
+      drawWrappedText(`Statistical Note: ${quizModal.explanation}`, COLORS.WHITE, { x: resBox.x + 10, y: resBox.y + 58, w: resBox.w - 20, h: 115 }, 15, 22);
+      drawButton(startBossBtn, ">> START BOSS FIGHT <<", quizModal.is_correct ? COLORS.GREEN : COLORS.ORANGE, 18, COLORS.BG_DARK);
+    }
+  }
+
+  // Offline Welcome Back Modal
+  if (offlineReport) {
+    ctx.fillStyle = "rgba(0, 0, 0, 0.78)";
+    ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+    const modal = { x: WIDTH / 2 - 260, y: 160, w: 520, h: 350 };
+    drawRoundRect(modal.x, modal.y, modal.w, modal.h, 18, COLORS.BG_PANEL, COLORS.GOLD, 3);
+    drawFittedText("WELCOME BACK!", COLORS.GOLD, { x: modal.x, y: 190, w: modal.w, h: 45 }, 32, true);
+
+    const hrs = Math.floor(offlineReport.seconds / 3600);
+    const mins = Math.floor((offlineReport.seconds % 3600) / 60);
+    const secs = offlineReport.seconds % 60;
+    const timeStr = hrs > 0 ? `${hrs}h ${mins}m ${secs}s` : `${mins}m ${secs}s`;
+
+    drawFittedText(`Time Offline: ${timeStr}`, COLORS.WHITE, { x: modal.x, y: 265, w: modal.w, h: 30 }, 16, false);
+    drawFittedText(`Stage ${saveData.stage} Rate: +${formatNum(offlineReport.rate)} DP / min`, COLORS.MUTED, { x: modal.x, y: 305, w: modal.w, h: 30 }, 16, false);
+    drawFittedText(`Earned: +${formatNum(offlineReport.earned)} Data Points!`, COLORS.GREEN, { x: modal.x, y: 350, w: modal.w, h: 36 }, 22, true);
+    drawButton(dismissModalBtn, "Claim Data Points", COLORS.GOLD, 18, COLORS.BG_DARK);
+  }
+
+  requestAnimationFrame(gameLoop);
+}
+
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
